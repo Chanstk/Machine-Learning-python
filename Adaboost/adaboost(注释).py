@@ -1,0 +1,136 @@
+from numpy import *
+
+#加载样本
+def loadDataSet(fileName):
+    numFeat = len(open(fileName).readline().split('\t'))
+    dataMat = []
+    labelMat = []
+    fr = open(fileName)
+    for line in fr.readlines():
+        lineArr = []
+        curLine = line.strip().split('\t')
+        for i in range(numFeat - 1):
+            lineArr.append(float(curLine[i]))
+        dataMat.append(lineArr)
+        labelMat.append(float(curLine[-1]))
+    return dataMat, labelMat
+
+#弱分类器，根据特征（dimen)的取值(threshVal),将大于threaVal的样本分为一类，小于等于threaVal的样本分为另一类
+#返回值：列向量，表示分类结果。
+#dataMatrix(样本矩阵),dimen(分类基于的特征）
+#threshVal（分类基于的值），threshIneq（比较条件，小于或大于等于）
+def stumpClassify(dataMatrix, dimen, threshVal, threshIneq):
+    #初始化一个列向量，全部置为1    
+    retArray = ones((shape(dataMatrix)[0], 1))
+    #如果取值小于（'lt' = less than)threshVal，对应的label置为-1
+    if threshIneq == 'lt':
+        retArray[dataMatrix[:, dimen] <= threshVal] = -1.0
+    #如果取值大于等于threshVal，对应的label置为-1
+    else:
+        retArray[dataMatrix[:, dimen] > threshVal] = -1.0
+    return retArray
+
+#根据D权值，建造错误率最小的单层决策树，dataArr(样本),classLabel(样本标签)
+#D(算法中的重要参数，与样本数量同大的一个列向量，每个取值表示相应样本的权重）
+def buildStump(dataArr, classLabels, D):
+    dataMatrix = mat(dataArr)
+    labelMat = mat(classLabels).T
+    m, n = shape(dataMatrix)
+    numSteps = 10.0
+    #数字典，包括'dim'（最好的分类特征），'threshVal'(最好的分类取值),'ineq'(最好的分类条件，小于或大于等于）
+    bestStump = {}
+    #分类结果
+    bestClassEst = mat(zeros((m, 1)))
+    #最小错误率
+    minError = inf
+    #遍历每个特征
+    for i in range(n):
+        #取得样本中当前特征的最小和最大值
+        rangeMin = dataMatrix[:, i].min()
+        rangeMax = dataMatrix[:, i].max()
+        stepSize = (rangeMax - rangeMin) / numSteps    
+        #对于[最小值,最大值]这个区间，递增地每次取一个值作为threshVal放入弱分类器中分类
+        for j in range(-1, int(numSteps) + 1):
+            #遍历分类条件，看哪个条件下的分类效果好
+            for inequal in ['lt', 'gt']:
+                #递增取值
+                threshVal = (rangeMin + float(j) * stepSize)
+                #predictedVals-分类结果
+                predictedVals = stumpClassify(
+                    dataMatrix, i, threshVal, inequal)
+                #表示分类错误样本的列向量,全部初始化为1
+                errArr = mat(ones((m, 1)))
+                #筛选出正确的分类结果，置为0
+                errArr[predictedVals == labelMat] = 0
+                #加权的错误率，因为每个样本都有权重（用D表示)
+                weightedError = D.T * errArr
+                #选出错误率最小的单层决策树
+                if weightedError < minError:
+                    minError = weightedError
+                    bestClassEst = predictedVals.copy()
+                    bestStump['dim'] = i
+                    bestStump['threshVal'] = threshVal
+                    bestStump['ineq'] = inequal
+    #返回最好的单层决策树，最小错误率，最后的分类结果
+    return bestStump, minError, bestClassEst
+
+#将弱分类器整合进Adaboost
+#numIt(迭代次数）
+#该函数返回多个分类器的集合，每个分类器有个权值alpha，表示该分类器的分类水平
+def adaBoostTrainDS(dataArr, classLabels, numIt=40):
+    #多个分类器集合weakClassArr
+    weakClassArr = []
+    #样本的个数
+    m = shape(dataArr)[0]
+    #样本的权值列向量D，每个样本的权值初始化为1/m
+    D = mat(ones((m, 1)) / m)
+    #最终的分类结果，该结果计算方式：将各个分类器分类的结果与分类器权值（alpha)相乘，然后相加
+    aggClassEst = mat(zeros((m, 1)))
+    for i in range(numIt):
+        #根据样本权值D获取弱分类器，错误率，分类结果
+        bestStump, error, classEst = buildStump(dataArr, classLabels, D)
+        #求取弱分类器的分类水平alpha
+        alpha = float(0.5 * log((1.0 - error) / max(error, 1e-16)))
+        #将alpha放入该弱分类器的字典
+        bestStump['alpha'] = alpha
+        #将弱分类器放入weakClassArr
+        weakClassArr.append(bestStump)
+        #根据当前弱分类器的分类结果，迭代求取新的权值列向量D
+        expon = multiply(-1 * alpha * mat(classLabels).T, classEst)
+        D = multiply(D, exp(expon))
+        D = D / D.sum()
+        #求解最终的分类结果（只是用来计算错误率）
+        aggClassEst += alpha * classEst
+        aggErrors = multiply(
+            sign(aggClassEst) != mat(classLabels).T, ones((m, 1)))
+        errorRate = aggErrors.sum() / m
+        #如果错误率为0，跳出迭代
+        if errorRate == 0.0:
+            break
+    #返回弱分类器集合
+    return weakClassArr
+
+#根据训练的弱分类器集合，来用adaboost进行分类
+def adaClassify(datToClass, classifierArr):
+    dataMatrix = mat(datToClass)
+    m = shape(dataMatrix)[0]
+    #最终的分类结果，该结果计算方式：将各个分类器分类的结果与分类器权值（alpha)相乘，然后相加
+    aggClassEst = mat(zeros((m, 1)))
+    for i in range(len(classifierArr)):
+        classEst = stumpClassify(dataMatrix, classifierArr[i]['dim'], classifierArr[
+                                 i]['threshVal'], classifierArr[i])
+        aggClassEst += classifierArr[i]['alpha'] * classEst
+    #返回最终分类结果
+    return sign(aggClassEst)
+
+
+def main():
+    dataArr, labelArr = loadDataSet('horseColicTraining2.txt')
+    classifierArray = adaBoostTrainDS(dataArr, labelArr)
+    testArr, testLabelArr = loadDataSet('horseColicTest2.txt')
+    predicted = adaClassify(testArr, classifierArray)
+    errArr = mat(ones((67, 1)))
+    print 'the total error rate', errArr[predicted != mat(testLabelArr).T].sum() / 67
+
+if __name__ == '__main__':
+    main()
